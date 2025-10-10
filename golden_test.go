@@ -22,26 +22,27 @@ type Golden struct {
 	trimPrefix  string
 	lineComment bool
 	valid       bool
+	invalid     string
 	reverse     bool
 	input       string // input; the package clause is provided when running the test.
 	output      string // expected output.
 }
 
 var golden = []Golden{
-	{"day", "", false, false, false, day_in, day_out},
-	{"offset", "", false, false, false, offset_in, offset_out},
-	{"gap", "", false, false, false, gap_in, gap_out},
-	{"num", "", false, false, false, num_in, num_out},
-	{"unum", "", false, false, false, unum_in, unum_out},
-	{"unumpos", "", false, false, false, unumpos_in, unumpos_out},
-	{"prime", "", false, false, false, prime_in, prime_out},
-	{"prefix", "Type", false, false, false, prefix_in, prefix_out},
-	{"tokens", "", true, false, false, tokens_in, tokens_out},
-	{"overflow8", "", false, false, false, overflow8_in, overflow8_out},
-	{"day_valid", "", false, true, false, day_in, day_valid_out},
-	{"gap_valid", "", false, true, false, gap_in, gap_valid_out},
-	{"prime_valid", "", false, true, false, prime_in, prime_valid_out},
-	{"day_reverse", "", false, false, true, day_in, day_reverse_out},
+	{"day", "", false, false, "", false, day_in, day_out},
+	{"offset", "", false, false, "", false, offset_in, offset_out},
+	{"gap", "", false, false, "", false, gap_in, gap_out},
+	{"num", "", false, false, "", false, num_in, num_out},
+	{"unum", "", false, false, "", false, unum_in, unum_out},
+	{"unumpos", "", false, false, "", false, unumpos_in, unumpos_out},
+	{"prime", "", false, false, "", false, prime_in, prime_out},
+	{"prefix", "Type", false, false, "", false, prefix_in, prefix_out},
+	{"tokens", "", true, false, "", false, tokens_in, tokens_out},
+	{"overflow8", "", false, false, "", false, overflow8_in, overflow8_out},
+	{"day_valid", "", false, true, "", false, day_in, day_valid_out},
+	{"gap_valid", "", false, true, "", false, gap_in, gap_valid_out},
+	{"prime_valid", "", false, true, "", false, prime_in, prime_valid_out},
+	{"day_reverse", "", false, false, "", true, day_in, day_reverse_out},
 }
 
 // Each example starts with "type XXX [u]int", with a single space separating them.
@@ -1218,10 +1219,11 @@ func TestGolden(t *testing.T) {
 			}
 
 			g := Generator{
-				pkg:     pkgs[0],
-				valid:   test.valid,
-				reverse: test.reverse,
-				logf:    t.Logf,
+				pkg:         pkgs[0],
+				valid:       test.valid,
+				invalidFlag: test.invalid,
+				reverse:     test.reverse,
+				logf:        t.Logf,
 			}
 			g.generate(tokens[1], findValues(tokens[1], pkgs[0]))
 			got := string(g.format())

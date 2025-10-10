@@ -89,6 +89,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -101,6 +102,7 @@ var (
 	linecomment = flag.Bool("linecomment", false, "use line comment text as printed text when present")
 	buildTags   = flag.String("tags", "", "comma-separated list of build tags to apply")
 	valid       = flag.Bool("valid", false, "generate Valid() bool method to check if value is defined")
+	invalid     = flag.String("invalid", "", "comma-separated list of invalid values/ranges (e.g., \"0,-1,<4,>=100\")")
 	reverse     = flag.Bool("reverse", false, "generate Reverse{{Type}} function for string to value lookup")
 )
 
@@ -173,9 +175,10 @@ func main() {
 	})
 	for _, pkg := range pkgs {
 		g := Generator{
-			pkg:     pkg,
-			valid:   *valid,
-			reverse: *reverse,
+			pkg:         pkg,
+			valid:       *valid,
+			invalidFlag: *invalid,
+			reverse:     *reverse,
 		}
 
 		// Print the header and package clause.
@@ -253,19 +256,158 @@ func isDirectory(name string) bool {
 	return info.IsDir()
 }
 
+// InvalidRange represents a range or value that should be considered invalid.
+type InvalidRange struct {
+	op    string // "", "<", ">", "<=", ">="
+	value int64  // the value to compare against
+}
+
 // Generator holds the state of the analysis. Primarily used to buffer
 // the output for format.Source.
 type Generator struct {
-	buf     bytes.Buffer // Accumulated output.
-	pkg     *Package     // Package we are scanning.
-	valid   bool         // Whether to generate Valid() method.
-	reverse bool         // Whether to generate Reverse{{Type}} function.
+	buf            bytes.Buffer     // Accumulated output.
+	pkg            *Package         // Package we are scanning.
+	valid          bool             // Whether to generate Valid() method.
+	invalidFlag    string           // The -invalid flag value.
+	invalidRanges  []InvalidRange   // Parsed invalid ranges.
+	reverse        bool             // Whether to generate Reverse{{Type}} function.
 
 	logf func(format string, args ...any) // test logging hook; nil when not testing
 }
 
 func (g *Generator) Printf(format string, args ...any) {
 	fmt.Fprintf(&g.buf, format, args...)
+}
+
+// parseInvalidRanges parses the -invalid flag value into InvalidRange structs.
+// It validates that ranges don't overlap and filters out negative values for unsigned types.
+func (g *Generator) parseInvalidRanges(typeName string, isSigned bool) error {
+	if g.invalidFlag == "" {
+		return nil
+	}
+
+	g.invalidRanges = nil
+	specs := strings.Split(g.invalidFlag, ",")
+
+	for _, spec := range specs {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			continue
+		}
+
+		var ir InvalidRange
+		var err error
+
+		switch {
+		case strings.HasPrefix(spec, ">="):
+			ir.op = ">="
+			ir.value, err = strconv.ParseInt(strings.TrimSpace(spec[2:]), 10, 64)
+		case strings.HasPrefix(spec, "<="):
+			ir.op = "<="
+			ir.value, err = strconv.ParseInt(strings.TrimSpace(spec[2:]), 10, 64)
+		case strings.HasPrefix(spec, ">"):
+			ir.op = ">"
+			ir.value, err = strconv.ParseInt(strings.TrimSpace(spec[1:]), 10, 64)
+		case strings.HasPrefix(spec, "<"):
+			ir.op = "<"
+			ir.value, err = strconv.ParseInt(strings.TrimSpace(spec[1:]), 10, 64)
+		default:
+			// Just a number
+			ir.op = ""
+			ir.value, err = strconv.ParseInt(spec, 10, 64)
+		}
+
+		if err != nil {
+			return fmt.Errorf("invalid value specification %q: %v", spec, err)
+		}
+
+		// Skip negative values for unsigned types
+		if !isSigned && ir.value < 0 {
+			if g.logf != nil {
+				g.logf("skipping negative value %d for unsigned type %s", ir.value, typeName)
+			}
+			continue
+		}
+
+		g.invalidRanges = append(g.invalidRanges, ir)
+	}
+
+	// Validate no overlapping ranges
+	return g.validateNoOverlap()
+}
+
+// validateNoOverlap checks that invalid ranges don't overlap.
+func (g *Generator) validateNoOverlap() error {
+	for i := 0; i < len(g.invalidRanges); i++ {
+		for j := i + 1; j < len(g.invalidRanges); j++ {
+			r1, r2 := g.invalidRanges[i], g.invalidRanges[j]
+
+			// Check for overlaps between different range types
+			if overlaps(r1, r2) {
+				return fmt.Errorf("overlapping invalid ranges: %s and %s", formatRange(r1), formatRange(r2))
+			}
+		}
+	}
+	return nil
+}
+
+// overlaps checks if two InvalidRanges overlap.
+func overlaps(r1, r2 InvalidRange) bool {
+	// Same exact value
+	if r1.op == "" && r2.op == "" && r1.value == r2.value {
+		return true
+	}
+
+	// Value falls in a range
+	if r1.op == "" && r2.op != "" {
+		return valueInRange(r1.value, r2)
+	}
+	if r2.op == "" && r1.op != "" {
+		return valueInRange(r2.value, r1)
+	}
+
+	// Two ranges - check for overlap
+	// For simplicity, we'll be conservative and flag adjacent/touching ranges as overlapping
+	switch {
+	case r1.op == "<" && r2.op == ">":
+		// < X and > Y overlap if Y < X
+		return r2.value < r1.value
+	case r1.op == ">" && r2.op == "<":
+		return r1.value < r2.value
+	case r1.op == "<=" && r2.op == ">=":
+		return r2.value <= r1.value
+	case r1.op == ">=" && r2.op == "<=":
+		return r1.value <= r2.value
+	case r1.op == r2.op:
+		// Same operator - these don't really overlap, but might be redundant
+		// We'll allow this for now
+		return false
+	}
+
+	return false
+}
+
+// valueInRange checks if a value falls within a range.
+func valueInRange(val int64, r InvalidRange) bool {
+	switch r.op {
+	case "<":
+		return val < r.value
+	case "<=":
+		return val <= r.value
+	case ">":
+		return val > r.value
+	case ">=":
+		return val >= r.value
+	}
+	return false
+}
+
+// formatRange formats an InvalidRange for error messages.
+func formatRange(r InvalidRange) string {
+	if r.op == "" {
+		return fmt.Sprintf("%d", r.value)
+	}
+	return fmt.Sprintf("%s %d", r.op, r.value)
 }
 
 // File holds a single parsed file and associated data.
@@ -392,6 +534,17 @@ func (g *Generator) generate(typeName string, values []Value) {
 	default:
 		g.buildMap(runs, typeName)
 	}
+	// Parse invalid ranges if specified (needed for both Valid() and Reverse functions)
+	if g.invalidFlag != "" || g.valid {
+		// Determine if the type is signed
+		isSigned := len(values) > 0 && values[0].signed
+
+		// Parse invalid ranges
+		if err := g.parseInvalidRanges(typeName, isSigned); err != nil {
+			log.Fatalf("parsing invalid ranges for %s: %v", typeName, err)
+		}
+	}
+
 	// Generate Valid() method if requested.
 	if g.valid {
 		switch {
@@ -747,29 +900,52 @@ const stringMap = `func (i %[1]s) String() string {
 func (g *Generator) buildValidOneRun(runs [][]Value, typeName string) {
 	values := runs[0]
 	g.Printf("\n")
-	// Arguments to format are:
-	//	[1]: type name
-	//	[2]: lowest defined value for type, as a string
-	g.Printf(validOneRun, typeName, values[0].String())
+	g.Printf("func (i %s) Valid() bool {\n", typeName)
+
+	// Add checks for invalid ranges first
+	g.printInvalidRangeChecks()
+
+	// Then check if it's in the valid range
+	g.Printf("\tidx := int(i) - %s\n", values[0].String())
+	g.Printf("\tif i < %s || idx >= len(_%s_index)-1 {\n", values[0].String(), typeName)
+	g.Printf("\t\treturn false\n")
+	g.Printf("\t}\n")
+	g.Printf("\treturn true\n")
+	g.Printf("}\n")
 }
 
-// Arguments to format are:
-//
-//	[1]: type name
-//	[2]: lowest defined value for type, as a string
-const validOneRun = `func (i %[1]s) Valid() bool {
-	idx := int(i) - %[2]s
-	if i < %[2]s || idx >= len(_%[1]s_index)-1 {
-		return false
+// printInvalidRangeChecks generates code to check if a value is in an invalid range.
+func (g *Generator) printInvalidRangeChecks() {
+	if len(g.invalidRanges) == 0 {
+		return
 	}
-	return true
+
+	for _, ir := range g.invalidRanges {
+		switch ir.op {
+		case "":
+			g.Printf("\tif i == %d {\n", ir.value)
+		case "<":
+			g.Printf("\tif i < %d {\n", ir.value)
+		case "<=":
+			g.Printf("\tif i <= %d {\n", ir.value)
+		case ">":
+			g.Printf("\tif i > %d {\n", ir.value)
+		case ">=":
+			g.Printf("\tif i >= %d {\n", ir.value)
+		}
+		g.Printf("\t\treturn false\n")
+		g.Printf("\t}\n")
+	}
 }
-`
 
 // buildValidMultipleRuns generates the Valid method for multiple runs of contiguous values.
 func (g *Generator) buildValidMultipleRuns(runs [][]Value, typeName string) {
 	g.Printf("\n")
 	g.Printf("func (i %s) Valid() bool {\n", typeName)
+
+	// Add checks for invalid ranges first
+	g.printInvalidRangeChecks()
+
 	g.Printf("\tswitch {\n")
 	for _, values := range runs {
 		if len(values) == 1 {
@@ -794,15 +970,15 @@ func (g *Generator) buildValidMultipleRuns(runs [][]Value, typeName string) {
 // buildValidMap generates the Valid method for sparse value sets using a map.
 func (g *Generator) buildValidMap(runs [][]Value, typeName string) {
 	g.Printf("\n")
-	g.Printf(validMap, typeName)
-}
+	g.Printf("func (i %s) Valid() bool {\n", typeName)
 
-// Argument to format is the type name.
-const validMap = `func (i %[1]s) Valid() bool {
-	_, ok := _%[1]s_map[i]
-	return ok
+	// Add checks for invalid ranges first
+	g.printInvalidRangeChecks()
+
+	g.Printf("\t_, ok := _%s_map[i]\n", typeName)
+	g.Printf("\treturn ok\n")
+	g.Printf("}\n")
 }
-`
 
 // buildReverseMaps generates the reverse lookup maps for string to value conversion.
 func (g *Generator) buildReverseMaps(runs [][]Value, typeName string) {
@@ -827,21 +1003,64 @@ func (g *Generator) buildReverseMaps(runs [][]Value, typeName string) {
 // buildReverseFunc generates the Reverse{{Type}} function for string to value lookup.
 func (g *Generator) buildReverseFunc(typeName string) {
 	g.Printf("\n")
-	g.Printf(reverseFunc, typeName)
+	g.Printf("func Reverse%s(s string, caseSensitive bool) (%s, bool) {\n", typeName, typeName)
+
+	// Declare zero value at the beginning if we have invalid ranges
+	if len(g.invalidRanges) > 0 {
+		g.Printf("\tvar zero %s\n", typeName)
+	}
+
+	g.Printf("\tif caseSensitive {\n")
+	g.Printf("\t\tif val, ok := _%s_rindex[s]; ok {\n", typeName)
+
+	// Add invalid range checks if specified
+	if len(g.invalidRanges) > 0 {
+		g.printInvalidRangeChecksReverse()
+	}
+
+	g.Printf("\t\t\treturn val, true\n")
+	g.Printf("\t\t}\n")
+	g.Printf("\t} else {\n")
+	g.Printf("\t\tif val, ok := _%s_rindex_insensitive[strings.ToLower(s)]; ok {\n", typeName)
+
+	// Add invalid range checks if specified
+	if len(g.invalidRanges) > 0 {
+		g.printInvalidRangeChecksReverse()
+	}
+
+	g.Printf("\t\t\treturn val, true\n")
+	g.Printf("\t\t}\n")
+	g.Printf("\t}\n")
+
+	// Declare zero value here if not already declared
+	if len(g.invalidRanges) == 0 {
+		g.Printf("\tvar zero %s\n", typeName)
+	}
+
+	g.Printf("\treturn zero, false\n")
+	g.Printf("}\n")
 }
 
-// Argument to format is the type name.
-const reverseFunc = `func Reverse%[1]s(s string, caseSensitive bool) (%[1]s, bool) {
-	if caseSensitive {
-		if val, ok := _%[1]s_rindex[s]; ok {
-			return val, true
-		}
-	} else {
-		if val, ok := _%[1]s_rindex_insensitive[strings.ToLower(s)]; ok {
-			return val, true
-		}
+// printInvalidRangeChecksReverse generates code to check if a value is in an invalid range for Reverse function.
+func (g *Generator) printInvalidRangeChecksReverse() {
+	if len(g.invalidRanges) == 0 {
+		return
 	}
-	var zero %[1]s
-	return zero, false
+
+	for _, ir := range g.invalidRanges {
+		switch ir.op {
+		case "":
+			g.Printf("\t\t\tif val == %d {\n", ir.value)
+		case "<":
+			g.Printf("\t\t\tif val < %d {\n", ir.value)
+		case "<=":
+			g.Printf("\t\t\tif val <= %d {\n", ir.value)
+		case ">":
+			g.Printf("\t\t\tif val > %d {\n", ir.value)
+		case ">=":
+			g.Printf("\t\t\tif val >= %d {\n", ir.value)
+		}
+		g.Printf("\t\t\t\treturn zero, false\n")
+		g.Printf("\t\t\t}\n")
+	}
 }
-`
