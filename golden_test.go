@@ -14,8 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"golang.org/x/tools/internal/testenv"
 )
 
 // Golden represents a test case.
@@ -23,21 +21,27 @@ type Golden struct {
 	name        string
 	trimPrefix  string
 	lineComment bool
+	valid       bool
+	reverse     bool
 	input       string // input; the package clause is provided when running the test.
 	output      string // expected output.
 }
 
 var golden = []Golden{
-	{"day", "", false, day_in, day_out},
-	{"offset", "", false, offset_in, offset_out},
-	{"gap", "", false, gap_in, gap_out},
-	{"num", "", false, num_in, num_out},
-	{"unum", "", false, unum_in, unum_out},
-	{"unumpos", "", false, unumpos_in, unumpos_out},
-	{"prime", "", false, prime_in, prime_out},
-	{"prefix", "Type", false, prefix_in, prefix_out},
-	{"tokens", "", true, tokens_in, tokens_out},
-	{"overflow8", "", false, overflow8_in, overflow8_out},
+	{"day", "", false, false, false, day_in, day_out},
+	{"offset", "", false, false, false, offset_in, offset_out},
+	{"gap", "", false, false, false, gap_in, gap_out},
+	{"num", "", false, false, false, num_in, num_out},
+	{"unum", "", false, false, false, unum_in, unum_out},
+	{"unumpos", "", false, false, false, unumpos_in, unumpos_out},
+	{"prime", "", false, false, false, prime_in, prime_out},
+	{"prefix", "Type", false, false, false, prefix_in, prefix_out},
+	{"tokens", "", true, false, false, tokens_in, tokens_out},
+	{"overflow8", "", false, false, false, overflow8_in, overflow8_out},
+	{"day_valid", "", false, true, false, day_in, day_valid_out},
+	{"gap_valid", "", false, true, false, gap_in, gap_valid_out},
+	{"prime_valid", "", false, true, false, prime_in, prime_valid_out},
+	{"day_reverse", "", false, false, true, day_in, day_reverse_out},
 }
 
 // Each example starts with "type XXX [u]int", with a single space separating them.
@@ -988,9 +992,209 @@ func (i Overflow8) String() string {
 }
 `
 
-func TestGolden(t *testing.T) {
-	testenv.NeedsTool(t, "go")
+// Test for -valid flag with one run (day type)
+const day_valid_out = `func _() {
+	// An "invalid array index" compiler error signifies that the constant values have changed.
+	// Re-run the stringer command to generate them again.
+	var x [1]struct{}
+	_ = x[Monday-0]
+	_ = x[Tuesday-1]
+	_ = x[Wednesday-2]
+	_ = x[Thursday-3]
+	_ = x[Friday-4]
+	_ = x[Saturday-5]
+	_ = x[Sunday-6]
+}
 
+const _Day_name = "MondayTuesdayWednesdayThursdayFridaySaturdaySunday"
+
+var _Day_index = [...]uint8{0, 6, 13, 22, 30, 36, 44, 50}
+
+func (i Day) String() string {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_Day_index)-1 {
+		return "Day(" + strconv.FormatInt(int64(i), 10) + ")"
+	}
+	return _Day_name[_Day_index[idx]:_Day_index[idx+1]]
+}
+
+func (i Day) Valid() bool {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_Day_index)-1 {
+		return false
+	}
+	return true
+}
+`
+
+// Test for -valid flag with multiple runs (gap type)
+const gap_valid_out = `func _() {
+	// An "invalid array index" compiler error signifies that the constant values have changed.
+	// Re-run the stringer command to generate them again.
+	var x [1]struct{}
+	_ = x[Two-2]
+	_ = x[Three-3]
+	_ = x[Five-5]
+	_ = x[Six-6]
+	_ = x[Seven-7]
+	_ = x[Eight-8]
+	_ = x[Nine-9]
+	_ = x[Eleven-11]
+}
+
+const (
+	_Gap_name_0 = "TwoThree"
+	_Gap_name_1 = "FiveSixSevenEightNine"
+	_Gap_name_2 = "Eleven"
+)
+
+var (
+	_Gap_index_0 = [...]uint8{0, 3, 8}
+	_Gap_index_1 = [...]uint8{0, 4, 7, 12, 17, 21}
+)
+
+func (i Gap) String() string {
+	switch {
+	case 2 <= i && i <= 3:
+		i -= 2
+		return _Gap_name_0[_Gap_index_0[i]:_Gap_index_0[i+1]]
+	case 5 <= i && i <= 9:
+		i -= 5
+		return _Gap_name_1[_Gap_index_1[i]:_Gap_index_1[i+1]]
+	case i == 11:
+		return _Gap_name_2
+	default:
+		return "Gap(" + strconv.FormatInt(int64(i), 10) + ")"
+	}
+}
+
+func (i Gap) Valid() bool {
+	switch {
+	case 2 <= i && i <= 3:
+		return true
+	case 5 <= i && i <= 9:
+		return true
+	case i == 11:
+		return true
+	default:
+		return false
+	}
+}
+`
+
+// Test for -valid flag with map (prime type)
+const prime_valid_out = `func _() {
+	// An "invalid array index" compiler error signifies that the constant values have changed.
+	// Re-run the stringer command to generate them again.
+	var x [1]struct{}
+	_ = x[p2-2]
+	_ = x[p3-3]
+	_ = x[p5-5]
+	_ = x[p7-7]
+	_ = x[p77-7]
+	_ = x[p11-11]
+	_ = x[p13-13]
+	_ = x[p17-17]
+	_ = x[p19-19]
+	_ = x[p23-23]
+	_ = x[p29-29]
+	_ = x[p37-31]
+	_ = x[p41-41]
+	_ = x[p43-43]
+}
+
+const _Prime_name = "p2p3p5p7p11p13p17p19p23p29p37p41p43"
+
+var _Prime_map = map[Prime]string{
+	2:  _Prime_name[0:2],
+	3:  _Prime_name[2:4],
+	5:  _Prime_name[4:6],
+	7:  _Prime_name[6:8],
+	11: _Prime_name[8:11],
+	13: _Prime_name[11:14],
+	17: _Prime_name[14:17],
+	19: _Prime_name[17:20],
+	23: _Prime_name[20:23],
+	29: _Prime_name[23:26],
+	31: _Prime_name[26:29],
+	41: _Prime_name[29:32],
+	43: _Prime_name[32:35],
+}
+
+func (i Prime) String() string {
+	if str, ok := _Prime_map[i]; ok {
+		return str
+	}
+	return "Prime(" + strconv.FormatInt(int64(i), 10) + ")"
+}
+
+func (i Prime) Valid() bool {
+	_, ok := _Prime_map[i]
+	return ok
+}
+`
+
+// Test for -reverse flag (day type)
+const day_reverse_out = `func _() {
+	// An "invalid array index" compiler error signifies that the constant values have changed.
+	// Re-run the stringer command to generate them again.
+	var x [1]struct{}
+	_ = x[Monday-0]
+	_ = x[Tuesday-1]
+	_ = x[Wednesday-2]
+	_ = x[Thursday-3]
+	_ = x[Friday-4]
+	_ = x[Saturday-5]
+	_ = x[Sunday-6]
+}
+
+const _Day_name = "MondayTuesdayWednesdayThursdayFridaySaturdaySunday"
+
+var _Day_index = [...]uint8{0, 6, 13, 22, 30, 36, 44, 50}
+
+func (i Day) String() string {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_Day_index)-1 {
+		return "Day(" + strconv.FormatInt(int64(i), 10) + ")"
+	}
+	return _Day_name[_Day_index[idx]:_Day_index[idx+1]]
+}
+
+var _Day_rindex = map[string]Day{
+	"Monday":    Monday,
+	"Tuesday":   Tuesday,
+	"Wednesday": Wednesday,
+	"Thursday":  Thursday,
+	"Friday":    Friday,
+	"Saturday":  Saturday,
+	"Sunday":    Sunday,
+}
+
+var _Day_rindex_insensitive = map[string]Day{
+	"monday":    Monday,
+	"tuesday":   Tuesday,
+	"wednesday": Wednesday,
+	"thursday":  Thursday,
+	"friday":    Friday,
+	"saturday":  Saturday,
+	"sunday":    Sunday,
+}
+
+func ReverseDay(s string, caseSensitive bool) Day {
+	if caseSensitive {
+		if val, ok := _Day_rindex[s]; ok {
+			return val
+		}
+	} else {
+		if val, ok := _Day_rindex_insensitive[strings.ToLower(s)]; ok {
+			return val
+		}
+	}
+	return -1
+}
+`
+
+func TestGolden(t *testing.T) {
 	dir := t.TempDir()
 	for _, test := range golden {
 		t.Run(test.name, func(t *testing.T) {
@@ -1013,8 +1217,10 @@ func TestGolden(t *testing.T) {
 			}
 
 			g := Generator{
-				pkg:  pkgs[0],
-				logf: t.Logf,
+				pkg:     pkgs[0],
+				valid:   test.valid,
+				reverse: test.reverse,
+				logf:    t.Logf,
 			}
 			g.generate(tokens[1], findValues(tokens[1], pkgs[0]))
 			got := string(g.format())

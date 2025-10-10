@@ -100,6 +100,8 @@ var (
 	trimprefix  = flag.String("trimprefix", "", "trim the `prefix` from the generated constant names")
 	linecomment = flag.Bool("linecomment", false, "use line comment text as printed text when present")
 	buildTags   = flag.String("tags", "", "comma-separated list of build tags to apply")
+	valid       = flag.Bool("valid", false, "generate Valid() bool method to check if value is defined")
+	reverse     = flag.Bool("reverse", false, "generate Reverse{{Type}} function for string to value lookup")
 )
 
 // Usage is a replacement usage function for the flags package.
@@ -171,7 +173,9 @@ func main() {
 	})
 	for _, pkg := range pkgs {
 		g := Generator{
-			pkg: pkg,
+			pkg:     pkg,
+			valid:   *valid,
+			reverse: *reverse,
 		}
 
 		// Print the header and package clause.
@@ -179,7 +183,14 @@ func main() {
 		g.Printf("\n")
 		g.Printf("package %s", g.pkg.name)
 		g.Printf("\n")
-		g.Printf("import \"strconv\"\n") // Used by all methods.
+		if g.reverse {
+			g.Printf("import (\n")
+			g.Printf("\t\"strconv\"\n")
+			g.Printf("\t\"strings\"\n")
+			g.Printf(")\n")
+		} else {
+			g.Printf("import \"strconv\"\n") // Used by all methods.
+		}
 
 		// Run generate for types that can be found. Keep the rest for the remainingTypes iteration.
 		var foundTypes, remainingTypes []string
@@ -245,8 +256,10 @@ func isDirectory(name string) bool {
 // Generator holds the state of the analysis. Primarily used to buffer
 // the output for format.Source.
 type Generator struct {
-	buf bytes.Buffer // Accumulated output.
-	pkg *Package     // Package we are scanning.
+	buf     bytes.Buffer // Accumulated output.
+	pkg     *Package     // Package we are scanning.
+	valid   bool         // Whether to generate Valid() method.
+	reverse bool         // Whether to generate Reverse{{Type}} function.
 
 	logf func(format string, args ...any) // test logging hook; nil when not testing
 }
@@ -378,6 +391,22 @@ func (g *Generator) generate(typeName string, values []Value) {
 		g.buildMultipleRuns(runs, typeName)
 	default:
 		g.buildMap(runs, typeName)
+	}
+	// Generate Valid() method if requested.
+	if g.valid {
+		switch {
+		case len(runs) == 1:
+			g.buildValidOneRun(runs, typeName)
+		case len(runs) <= 10:
+			g.buildValidMultipleRuns(runs, typeName)
+		default:
+			g.buildValidMap(runs, typeName)
+		}
+	}
+	// Generate Reverse{{Type}} function if requested.
+	if g.reverse {
+		g.buildReverseMaps(runs, typeName)
+		g.buildReverseFunc(typeName)
 	}
 }
 
@@ -711,5 +740,107 @@ const stringMap = `func (i %[1]s) String() string {
 		return str
 	}
 	return "%[1]s(" + strconv.FormatInt(int64(i), 10) + ")"
+}
+`
+
+// buildValidOneRun generates the Valid method for a single run of contiguous values.
+func (g *Generator) buildValidOneRun(runs [][]Value, typeName string) {
+	values := runs[0]
+	g.Printf("\n")
+	// Arguments to format are:
+	//	[1]: type name
+	//	[2]: lowest defined value for type, as a string
+	g.Printf(validOneRun, typeName, values[0].String())
+}
+
+// Arguments to format are:
+//
+//	[1]: type name
+//	[2]: lowest defined value for type, as a string
+const validOneRun = `func (i %[1]s) Valid() bool {
+	idx := int(i) - %[2]s
+	if i < %[2]s || idx >= len(_%[1]s_index)-1 {
+		return false
+	}
+	return true
+}
+`
+
+// buildValidMultipleRuns generates the Valid method for multiple runs of contiguous values.
+func (g *Generator) buildValidMultipleRuns(runs [][]Value, typeName string) {
+	g.Printf("\n")
+	g.Printf("func (i %s) Valid() bool {\n", typeName)
+	g.Printf("\tswitch {\n")
+	for _, values := range runs {
+		if len(values) == 1 {
+			g.Printf("\tcase i == %s:\n", &values[0])
+			g.Printf("\t\treturn true\n")
+			continue
+		}
+		if values[0].value == 0 && !values[0].signed {
+			// For an unsigned lower bound of 0, "0 <= i" would be redundant.
+			g.Printf("\tcase i <= %s:\n", &values[len(values)-1])
+		} else {
+			g.Printf("\tcase %s <= i && i <= %s:\n", &values[0], &values[len(values)-1])
+		}
+		g.Printf("\t\treturn true\n")
+	}
+	g.Printf("\tdefault:\n")
+	g.Printf("\t\treturn false\n")
+	g.Printf("\t}\n")
+	g.Printf("}\n")
+}
+
+// buildValidMap generates the Valid method for sparse value sets using a map.
+func (g *Generator) buildValidMap(runs [][]Value, typeName string) {
+	g.Printf("\n")
+	g.Printf(validMap, typeName)
+}
+
+// Argument to format is the type name.
+const validMap = `func (i %[1]s) Valid() bool {
+	_, ok := _%[1]s_map[i]
+	return ok
+}
+`
+
+// buildReverseMaps generates the reverse lookup maps for string to value conversion.
+func (g *Generator) buildReverseMaps(runs [][]Value, typeName string) {
+	g.Printf("\n")
+	g.Printf("var _%s_rindex = map[string]%s{\n", typeName, typeName)
+	for _, values := range runs {
+		for _, value := range values {
+			g.Printf("\t%q: %s,\n", value.name, value.originalName)
+		}
+	}
+	g.Printf("}\n\n")
+
+	g.Printf("var _%s_rindex_insensitive = map[string]%s{\n", typeName, typeName)
+	for _, values := range runs {
+		for _, value := range values {
+			g.Printf("\t%q: %s,\n", strings.ToLower(value.name), value.originalName)
+		}
+	}
+	g.Printf("}\n")
+}
+
+// buildReverseFunc generates the Reverse{{Type}} function for string to value lookup.
+func (g *Generator) buildReverseFunc(typeName string) {
+	g.Printf("\n")
+	g.Printf(reverseFunc, typeName)
+}
+
+// Argument to format is the type name.
+const reverseFunc = `func Reverse%[1]s(s string, caseSensitive bool) %[1]s {
+	if caseSensitive {
+		if val, ok := _%[1]s_rindex[s]; ok {
+			return val
+		}
+	} else {
+		if val, ok := _%[1]s_rindex_insensitive[strings.ToLower(s)]; ok {
+			return val
+		}
+	}
+	return -1
 }
 `
