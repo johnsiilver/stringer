@@ -51,15 +51,16 @@ var _Status_rindex_insensitive = map[string]Status{
 	"failed":    Failed,
 }
 
-func ReverseStatus(s string, caseSensitive bool) Status {
+func ReverseStatus(s string, caseSensitive bool) (Status, bool) {
 	if caseSensitive {
 		if val, ok := _Status_rindex[s]; ok {
-			return val
+			return val, true
 		}
 	} else {
 		if val, ok := _Status_rindex_insensitive[strings.ToLower(s)]; ok {
-			return val
+			return val, true
 		}
 	}
-	return -1
+	var zero Status
+	return zero, false
 }

@@ -1180,17 +1180,18 @@ var _Day_rindex_insensitive = map[string]Day{
 	"sunday":    Sunday,
 }
 
-func ReverseDay(s string, caseSensitive bool) Day {
+func ReverseDay(s string, caseSensitive bool) (Day, bool) {
 	if caseSensitive {
 		if val, ok := _Day_rindex[s]; ok {
-			return val
+			return val, true
 		}
 	} else {
 		if val, ok := _Day_rindex_insensitive[strings.ToLower(s)]; ok {
-			return val
+			return val, true
 		}
 	}
-	return -1
+	var zero Day
+	return zero, false
 }
 `
 

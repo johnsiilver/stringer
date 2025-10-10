@@ -831,16 +831,17 @@ func (g *Generator) buildReverseFunc(typeName string) {
 }
 
 // Argument to format is the type name.
-const reverseFunc = `func Reverse%[1]s(s string, caseSensitive bool) %[1]s {
+const reverseFunc = `func Reverse%[1]s(s string, caseSensitive bool) (%[1]s, bool) {
 	if caseSensitive {
 		if val, ok := _%[1]s_rindex[s]; ok {
-			return val
+			return val, true
 		}
 	} else {
 		if val, ok := _%[1]s_rindex_insensitive[strings.ToLower(s)]; ok {
-			return val
+			return val, true
 		}
 	}
-	return -1
+	var zero %[1]s
+	return zero, false
 }
 `

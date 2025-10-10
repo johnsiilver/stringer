@@ -41,23 +41,23 @@ func main() {
 	}
 
 	// Test Reverse function - case sensitive
-	reversedStatus := ReverseStatus("Active", true)
-	if reversedStatus != Active {
-		fmt.Fprintf(os.Stderr, "ReverseStatus(\"Active\", true) failed: got %v, want %v\n", reversedStatus, Active)
+	reversedStatus, ok := ReverseStatus("Active", true)
+	if !ok || reversedStatus != Active {
+		fmt.Fprintf(os.Stderr, "ReverseStatus(\"Active\", true) failed: got (%v, %v), want (%v, true)\n", reversedStatus, ok, Active)
 		os.Exit(1)
 	}
 
 	// Test Reverse function - case insensitive
-	reversedStatus = ReverseStatus("active", false)
-	if reversedStatus != Active {
-		fmt.Fprintf(os.Stderr, "ReverseStatus(\"active\", false) failed: got %v, want %v\n", reversedStatus, Active)
+	reversedStatus, ok = ReverseStatus("active", false)
+	if !ok || reversedStatus != Active {
+		fmt.Fprintf(os.Stderr, "ReverseStatus(\"active\", false) failed: got (%v, %v), want (%v, true)\n", reversedStatus, ok, Active)
 		os.Exit(1)
 	}
 
 	// Test Reverse function - not found
-	reversedStatus = ReverseStatus("Unknown", true)
-	if reversedStatus != -1 {
-		fmt.Fprintf(os.Stderr, "ReverseStatus(\"Unknown\", true) failed: got %v, want -1\n", reversedStatus)
+	reversedStatus, ok = ReverseStatus("Unknown", true)
+	if ok {
+		fmt.Fprintf(os.Stderr, "ReverseStatus(\"Unknown\", true) failed: got (%v, %v), want (_, false)\n", reversedStatus, ok)
 		os.Exit(1)
 	}
 }
