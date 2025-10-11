@@ -908,7 +908,14 @@ func (g *Generator) buildValidOneRun(runs [][]Value, typeName string) {
 
 	// Then check if it's in the valid range
 	g.Printf("\tidx := int(i) - %s\n", values[0].String())
-	g.Printf("\tif i < %s || idx >= len(_%s_index)-1 {\n", values[0].String(), typeName)
+
+	// For unsigned types, skip the i < lower_bound check since it's always false
+	if values[0].signed {
+		g.Printf("\tif i < %s || idx >= len(_%s_index)-1 {\n", values[0].String(), typeName)
+	} else {
+		g.Printf("\tif idx >= len(_%s_index)-1 {\n", typeName)
+	}
+
 	g.Printf("\t\treturn false\n")
 	g.Printf("\t}\n")
 	g.Printf("\treturn true\n")
