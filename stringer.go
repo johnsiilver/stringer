@@ -1013,62 +1013,30 @@ func (g *Generator) buildReverseFunc(typeName string) {
 	g.Printf("\n")
 	g.Printf("func Reverse%s(s string, caseSensitive bool) (%s, bool) {\n", typeName, typeName)
 
-	// Declare zero value at the beginning if we have invalid ranges
-	if len(g.invalidRanges) > 0 {
-		g.Printf("\tvar zero %s\n", typeName)
-	}
-
 	g.Printf("\tif caseSensitive {\n")
 	g.Printf("\t\tif val, ok := _%s_rindex[s]; ok {\n", typeName)
 
-	// Add invalid range checks if specified
+	// If invalid ranges are specified, use Valid() to check
 	if len(g.invalidRanges) > 0 {
-		g.printInvalidRangeChecksReverse()
+		g.Printf("\t\t\treturn val, val.Valid()\n")
+	} else {
+		g.Printf("\t\t\treturn val, true\n")
 	}
 
-	g.Printf("\t\t\treturn val, true\n")
 	g.Printf("\t\t}\n")
 	g.Printf("\t} else {\n")
 	g.Printf("\t\tif val, ok := _%s_rindex_insensitive[strings.ToLower(s)]; ok {\n", typeName)
 
-	// Add invalid range checks if specified
+	// If invalid ranges are specified, use Valid() to check
 	if len(g.invalidRanges) > 0 {
-		g.printInvalidRangeChecksReverse()
+		g.Printf("\t\t\treturn val, val.Valid()\n")
+	} else {
+		g.Printf("\t\t\treturn val, true\n")
 	}
 
-	g.Printf("\t\t\treturn val, true\n")
 	g.Printf("\t\t}\n")
 	g.Printf("\t}\n")
-
-	// Declare zero value here if not already declared
-	if len(g.invalidRanges) == 0 {
-		g.Printf("\tvar zero %s\n", typeName)
-	}
-
+	g.Printf("\tvar zero %s\n", typeName)
 	g.Printf("\treturn zero, false\n")
 	g.Printf("}\n")
-}
-
-// printInvalidRangeChecksReverse generates code to check if a value is in an invalid range for Reverse function.
-func (g *Generator) printInvalidRangeChecksReverse() {
-	if len(g.invalidRanges) == 0 {
-		return
-	}
-
-	for _, ir := range g.invalidRanges {
-		switch ir.op {
-		case "":
-			g.Printf("\t\t\tif val == %d {\n", ir.value)
-		case "<":
-			g.Printf("\t\t\tif val < %d {\n", ir.value)
-		case "<=":
-			g.Printf("\t\t\tif val <= %d {\n", ir.value)
-		case ">":
-			g.Printf("\t\t\tif val > %d {\n", ir.value)
-		case ">=":
-			g.Printf("\t\t\tif val >= %d {\n", ir.value)
-		}
-		g.Printf("\t\t\t\treturn zero, false\n")
-		g.Printf("\t\t\t}\n")
-	}
 }
