@@ -823,21 +823,22 @@ func (g *Generator) buildOneRun(runs [][]Value, typeName string) {
 	values := runs[0]
 	g.Printf("\n")
 	g.declareIndexAndNameVar(values, typeName)
-	g.Printf(stringOneRun, typeName, values[0].String())
-}
 
-// Arguments to format are:
-//
-//	[1]: type name
-//	[2]: lowest defined value for type, as a string
-const stringOneRun = `func (i %[1]s) String() string {
-	idx := int(i) - %[2]s
-	if i < %[2]s || idx >= len(_%[1]s_index)-1 {
-		return "%[1]s(" + strconv.FormatInt(int64(i), 10) + ")"
+	g.Printf("func (i %s) String() string {\n", typeName)
+	g.Printf("\tidx := int(i) - %s\n", values[0].String())
+
+	// For unsigned types, skip the i < lower_bound check since it's always false
+	if values[0].signed {
+		g.Printf("\tif i < %s || idx >= len(_%s_index)-1 {\n", values[0].String(), typeName)
+	} else {
+		g.Printf("\tif idx >= len(_%s_index)-1 {\n", typeName)
 	}
-	return _%[1]s_name[_%[1]s_index[idx] : _%[1]s_index[idx+1]]
+
+	g.Printf("\t\treturn \"%s(\" + strconv.FormatInt(int64(i), 10) + \")\"\n", typeName)
+	g.Printf("\t}\n")
+	g.Printf("\treturn _%s_name[_%s_index[idx] : _%s_index[idx+1]]\n", typeName, typeName, typeName)
+	g.Printf("}\n")
 }
-`
 
 // buildMultipleRuns generates the variables and String method for multiple runs of contiguous values.
 // For this pattern, a single Printf format won't do.
