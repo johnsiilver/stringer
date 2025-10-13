@@ -102,7 +102,8 @@
 //
 // The -marshal flag generates MarshalJSON and UnmarshalJSON methods for JSON encoding/decoding.
 // The methods use the String() representation for marshaling and the Reverse{{Type}} function
-// for unmarshaling. Requires -reverse.
+// for unmarshaling. MarshalJSON validates the value using Valid() before marshaling, returning
+// an error for invalid values. Requires -reverse and automatically enables -valid.
 package main
 
 import (
@@ -166,7 +167,7 @@ func Usage() {
 	fmt.Fprintf(os.Stderr, "  -invalid: Specify invalid values/ranges (e.g., \"0,<4,>=100\")\n")
 	fmt.Fprintf(os.Stderr, "  -reverse: Generate Reverse{{Type}} function for string-to-value lookup\n")
 	fmt.Fprintf(os.Stderr, "  -replace: Apply string replacements in reverse lookup (requires -reverse)\n")
-	fmt.Fprintf(os.Stderr, "  -marshal: Generate JSON marshal methods (requires -reverse)\n")
+	fmt.Fprintf(os.Stderr, "  -marshal: Generate JSON marshal methods (requires -reverse, enables -valid)\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "For more information, see:\n")
 	fmt.Fprintf(os.Stderr, "\thttps://pkg.go.dev/golang.org/x/tools/cmd/stringer\n")
@@ -188,6 +189,10 @@ func main() {
 	// Validate flag dependencies
 	if *marshal && !*reverse {
 		log.Fatal("-marshal flag requires -reverse flag")
+	}
+	// Marshal requires Valid() to check values before marshaling
+	if *marshal {
+		*valid = true
 	}
 	if len(replace) > 0 && !*reverse {
 		log.Fatal("-replace flag requires -reverse flag")
@@ -1211,6 +1216,9 @@ func (g *Generator) buildMarshalMethods(typeName string) {
 	// MarshalJSON method
 	g.Printf("\n")
 	g.Printf("func (i %s) MarshalJSON() ([]byte, error) {\n", typeName)
+	g.Printf("\tif !i.Valid() {\n")
+	g.Printf("\t\treturn nil, fmt.Errorf(\"invalid %s value: %%d\", i)\n", typeName)
+	g.Printf("\t}\n")
 	g.Printf("\ts := i.String()\n")
 	g.Printf("\treturn []byte(`\"` + s + `\"`), nil\n")
 	g.Printf("}\n")

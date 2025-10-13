@@ -241,6 +241,14 @@ const (
 	if !strings.Contains(string(content), "unsafe.String(") {
 		t.Errorf("Generated code does not use unsafe.String:\n%s", content)
 	}
+	// Verify Valid() method is generated (marshal auto-enables -valid)
+	if !strings.Contains(string(content), "func (i Color) Valid() bool") {
+		t.Errorf("Generated code does not contain Valid() method:\n%s", content)
+	}
+	// Verify MarshalJSON checks Valid()
+	if !strings.Contains(string(content), "if !i.Valid()") {
+		t.Errorf("Generated code does not check Valid() in MarshalJSON:\n%s", content)
+	}
 
 	// Write a test program to verify runtime behavior
 	testProgram := filepath.Join(tempDir, "main.go")
@@ -282,6 +290,14 @@ func main() {
 	err = json.Unmarshal([]byte("\"InvalidColor\""), &c3)
 	if err == nil {
 		fmt.Println("FAIL: json.Unmarshal(\"InvalidColor\") should return error")
+		os.Exit(1)
+	}
+
+	// Test marshaling invalid value
+	invalidColor := Color(100)
+	_, err = json.Marshal(invalidColor)
+	if err == nil {
+		fmt.Println("FAIL: json.Marshal(Color(100)) should return error for invalid value")
 		os.Exit(1)
 	}
 
