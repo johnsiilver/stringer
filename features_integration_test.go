@@ -321,6 +321,121 @@ func main() {
 	}
 }
 
+// TestMarshalInsensitive tests that the -marshalinsensitive flag makes UnmarshalJSON case-insensitive
+func TestMarshalInsensitive(t *testing.T) {
+	tempDir := t.TempDir()
+	stringerBin := buildStringer(t, tempDir)
+
+	// Create a test type file
+	testFile := filepath.Join(tempDir, "test.go")
+	testCode := `package main
+
+type Color int
+
+const (
+	Red Color = iota
+	Green
+	Blue
+)
+`
+	if err := os.WriteFile(testFile, []byte(testCode), 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	// Run stringer with marshalinsensitive (which should auto-enable marshal and reverse)
+	cmd := exec.Command(stringerBin, "-type=Color", "-marshalinsensitive", testFile)
+	cmd.Dir = tempDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Failed to run stringer: %v\n%s", err, output)
+	}
+
+	// Read generated file
+	generatedFile := filepath.Join(tempDir, "color_string.go")
+	content, err := os.ReadFile(generatedFile)
+	if err != nil {
+		t.Fatalf("Failed to read generated file: %v", err)
+	}
+
+	// Verify the JSON methods are present
+	if !strings.Contains(string(content), "func (i Color) MarshalJSON()") {
+		t.Errorf("Generated code does not contain MarshalJSON method:\n%s", content)
+	}
+	if !strings.Contains(string(content), "func (i *Color) UnmarshalJSON(") {
+		t.Errorf("Generated code does not contain UnmarshalJSON method:\n%s", content)
+	}
+	// Verify Reverse function is called with false (case insensitive)
+	if !strings.Contains(string(content), "ReverseColor(s, false)") {
+		t.Errorf("Generated code does not call ReverseColor with false (case insensitive):\n%s", content)
+	}
+
+	// Write a test program to verify runtime behavior
+	testProgram := filepath.Join(tempDir, "main.go")
+	programCode := `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+func main() {
+	// Test case-insensitive unmarshal - lowercase
+	var c1 Color
+	err := json.Unmarshal([]byte("\"red\""), &c1)
+	if err != nil {
+		fmt.Printf("FAIL: json.Unmarshal(\"red\") returned error: %v\n", err)
+		os.Exit(1)
+	}
+	if c1 != Red {
+		fmt.Printf("FAIL: json.Unmarshal(\"red\") = %v, want Red\n", c1)
+		os.Exit(1)
+	}
+
+	// Test case-insensitive unmarshal - mixed case
+	var c2 Color
+	err = json.Unmarshal([]byte("\"GrEeN\""), &c2)
+	if err != nil {
+		fmt.Printf("FAIL: json.Unmarshal(\"GrEeN\") returned error: %v\n", err)
+		os.Exit(1)
+	}
+	if c2 != Green {
+		fmt.Printf("FAIL: json.Unmarshal(\"GrEeN\") = %v, want Green\n", c2)
+		os.Exit(1)
+	}
+
+	// Test case-insensitive unmarshal - uppercase
+	var c3 Color
+	err = json.Unmarshal([]byte("\"BLUE\""), &c3)
+	if err != nil {
+		fmt.Printf("FAIL: json.Unmarshal(\"BLUE\") returned error: %v\n", err)
+		os.Exit(1)
+	}
+	if c3 != Blue {
+		fmt.Printf("FAIL: json.Unmarshal(\"BLUE\") = %v, want Blue\n", c3)
+		os.Exit(1)
+	}
+
+	fmt.Println("PASS")
+}
+`
+	if err := os.WriteFile(testProgram, []byte(programCode), 0644); err != nil {
+		t.Fatalf("Failed to write test program: %v", err)
+	}
+
+	// Run the test program
+	cmd = exec.Command("go", "run", testFile, generatedFile, testProgram)
+	cmd.Dir = tempDir
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Test program failed: %v\n%s", err, output)
+	}
+
+	if !strings.Contains(string(output), "PASS") {
+		t.Errorf("Test program did not pass:\n%s", output)
+	}
+}
+
 func TestParseReplacementPair(t *testing.T) {
 	tests := []struct {
 		name        string

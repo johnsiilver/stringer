@@ -104,6 +104,10 @@
 // The methods use the String() representation for marshaling and the Reverse{{Type}} function
 // for unmarshaling. MarshalJSON validates the value using Valid() before marshaling, returning
 // an error for invalid values. Requires -reverse and automatically enables -valid.
+//
+// The -marshalinsensitive flag makes UnmarshalJSON case-insensitive when looking up string values.
+// For example, "red", "Red", and "RED" would all unmarshal to the same value. Automatically enables
+// -marshal (and transitively -reverse and -valid).
 package main
 
 import (
@@ -145,9 +149,10 @@ var (
 	buildTags   = flag.String("tags", "", "comma-separated list of build tags to apply")
 	valid       = flag.Bool("valid", false, "generate Valid() bool method to check if value is defined")
 	invalid     = flag.String("invalid", "", "comma-separated list of invalid values/ranges (e.g., \"0,-1,<4,>=100\")")
-	reverse     = flag.Bool("reverse", false, "generate Reverse{{Type}} function for string to value lookup")
-	marshal     = flag.Bool("marshal", false, "generate MarshalJSON/UnmarshalJSON methods (requires -reverse)")
-	replace     replaceFlags
+	reverse            = flag.Bool("reverse", false, "generate Reverse{{Type}} function for string to value lookup")
+	marshal            = flag.Bool("marshal", false, "generate MarshalJSON/UnmarshalJSON methods (requires -reverse)")
+	marshalinsensitive = flag.Bool("marshalinsensitive", false, "make UnmarshalJSON case-insensitive (automatically enables -marshal)")
+	replace            replaceFlags
 )
 
 func init() {
@@ -168,6 +173,7 @@ func Usage() {
 	fmt.Fprintf(os.Stderr, "  -reverse: Generate Reverse{{Type}} function for string-to-value lookup\n")
 	fmt.Fprintf(os.Stderr, "  -replace: Apply string replacements in reverse lookup (requires -reverse)\n")
 	fmt.Fprintf(os.Stderr, "  -marshal: Generate JSON marshal methods (requires -reverse, enables -valid)\n")
+	fmt.Fprintf(os.Stderr, "  -marshalinsensitive: Make UnmarshalJSON case-insensitive (enables -marshal)\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "For more information, see:\n")
 	fmt.Fprintf(os.Stderr, "\thttps://pkg.go.dev/golang.org/x/tools/cmd/stringer\n")
@@ -187,6 +193,11 @@ func main() {
 	}
 
 	// Validate flag dependencies
+	// marshalinsensitive automatically enables marshal (and marshal requires reverse)
+	if *marshalinsensitive {
+		*marshal = true
+		*reverse = true
+	}
 	if *marshal && !*reverse {
 		log.Fatal("-marshal flag requires -reverse flag")
 	}
@@ -247,11 +258,12 @@ func main() {
 	})
 	for _, pkg := range pkgs {
 		g := Generator{
-			pkg:         pkg,
-			valid:       *valid,
-			invalidFlag: *invalid,
-			reverse:     *reverse,
-			marshal:     *marshal,
+			pkg:                pkg,
+			valid:              *valid,
+			invalidFlag:        *invalid,
+			reverse:            *reverse,
+			marshal:            *marshal,
+			marshalinsensitive: *marshalinsensitive,
 		}
 
 		// Parse replacements if provided
@@ -364,9 +376,10 @@ type Generator struct {
 	valid         bool           // Whether to generate Valid() method.
 	invalidFlag   string         // The -invalid flag value.
 	invalidRanges []InvalidRange // Parsed invalid ranges.
-	reverse       bool           // Whether to generate Reverse{{Type}} function.
-	marshal       bool           // Whether to generate MarshalJSON/UnmarshalJSON methods.
-	replacements  []ReplacePair  // String replacements for Reverse function.
+	reverse            bool           // Whether to generate Reverse{{Type}} function.
+	marshal            bool           // Whether to generate MarshalJSON/UnmarshalJSON methods.
+	marshalinsensitive bool           // Whether to make UnmarshalJSON case-insensitive.
+	replacements       []ReplacePair  // String replacements for Reverse function.
 
 	logf func(format string, args ...any) // test logging hook; nil when not testing
 }
@@ -1233,7 +1246,8 @@ func (g *Generator) buildMarshalMethods(typeName string) {
 	g.Printf("\tif len(data) > 2 {\n")
 	g.Printf("\t\ts = unsafe.String(&data[1], len(data)-2)\n")
 	g.Printf("\t}\n")
-	g.Printf("\tval, ok := Reverse%s(s, true)\n", typeName)
+	caseSensitive := !g.marshalinsensitive
+	g.Printf("\tval, ok := Reverse%s(s, %t)\n", typeName, caseSensitive)
 	g.Printf("\tif !ok {\n")
 	g.Printf("\t\treturn fmt.Errorf(\"invalid %s value: %%s\", s)\n", typeName)
 	g.Printf("\t}\n")
