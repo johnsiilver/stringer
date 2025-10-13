@@ -74,7 +74,36 @@
 // The -trimprefix flag specifies a prefix to remove from the constant names
 // when generating the string representations. For instance, -trimprefix=Pill
 // would be an alternative way to ensure that PillAspirin.String() == "Aspirin".
-package main // import "golang.org/x/tools/cmd/stringer"
+//
+// # Additional Methods
+//
+// The -valid flag generates a Valid() bool method that returns true if the value
+// is one of the defined constants.
+//
+// The -invalid flag accepts a comma-separated list of values or ranges that should
+// be considered invalid. For example, -invalid="0,<4,>=100" marks 0, values less than 4,
+// and values greater than or equal to 100 as invalid. This affects the Valid() method
+// and the reverse lookup function.
+//
+// The -reverse flag generates a Reverse{{Type}}(s string, caseSensitive bool) ({{Type}}, bool)
+// function that performs a reverse lookup from string to enum value.
+//
+// The -replace flag (can be used multiple times) specifies string replacements to apply
+// in the reverse lookup function. For example, -replace=-,_ will replace dashes with
+// underscores before lookup. Requires -reverse.
+//
+// The flag supports backslash escaping for special characters:
+//   \,  → literal comma (allows replacing commas)
+//   \\  → literal backslash
+// For example, -replace=\,,_ replaces commas with underscores.
+//
+// When multiple -replace flags are used, they are applied sequentially in the order
+// specified. For example, -replace=a,b -replace=b,c will transform "a" to "c" (a→b→c).
+//
+// The -marshal flag generates MarshalJSON and UnmarshalJSON methods for JSON encoding/decoding.
+// The methods use the String() representation for marshaling and the Reverse{{Type}} function
+// for unmarshaling. Requires -reverse.
+package main
 
 import (
 	"bytes"
@@ -95,6 +124,18 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
+// replaceFlags implements flag.Value to support multiple --replace flags.
+type replaceFlags []string
+
+func (r *replaceFlags) String() string {
+	return strings.Join(*r, ",")
+}
+
+func (r *replaceFlags) Set(value string) error {
+	*r = append(*r, value)
+	return nil
+}
+
 var (
 	typeNames   = flag.String("type", "", "comma-separated list of type names; must be set")
 	output      = flag.String("output", "", "output file name; default srcdir/<type>_string.go")
@@ -104,15 +145,32 @@ var (
 	valid       = flag.Bool("valid", false, "generate Valid() bool method to check if value is defined")
 	invalid     = flag.String("invalid", "", "comma-separated list of invalid values/ranges (e.g., \"0,-1,<4,>=100\")")
 	reverse     = flag.Bool("reverse", false, "generate Reverse{{Type}} function for string to value lookup")
+	marshal     = flag.Bool("marshal", false, "generate MarshalJSON/UnmarshalJSON methods (requires -reverse)")
+	replace     replaceFlags
 )
+
+func init() {
+	flag.Var(&replace, "replace", "comma-separated old,new pair for string replacement in Reverse (requires -reverse, can be used multiple times)")
+}
 
 // Usage is a replacement usage function for the flags package.
 func Usage() {
 	fmt.Fprintf(os.Stderr, "Usage of stringer:\n")
 	fmt.Fprintf(os.Stderr, "\tstringer [flags] -type T [directory]\n")
 	fmt.Fprintf(os.Stderr, "\tstringer [flags] -type T files... # Must be a single package\n")
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "Stringer generates String() methods for integer-based enum types.\n")
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "Additional methods can be generated:\n")
+	fmt.Fprintf(os.Stderr, "  -valid: Generate Valid() bool method\n")
+	fmt.Fprintf(os.Stderr, "  -invalid: Specify invalid values/ranges (e.g., \"0,<4,>=100\")\n")
+	fmt.Fprintf(os.Stderr, "  -reverse: Generate Reverse{{Type}} function for string-to-value lookup\n")
+	fmt.Fprintf(os.Stderr, "  -replace: Apply string replacements in reverse lookup (requires -reverse)\n")
+	fmt.Fprintf(os.Stderr, "  -marshal: Generate JSON marshal methods (requires -reverse)\n")
+	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "For more information, see:\n")
 	fmt.Fprintf(os.Stderr, "\thttps://pkg.go.dev/golang.org/x/tools/cmd/stringer\n")
+	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "Flags:\n")
 	flag.PrintDefaults()
 }
@@ -126,6 +184,15 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+
+	// Validate flag dependencies
+	if *marshal && !*reverse {
+		log.Fatal("-marshal flag requires -reverse flag")
+	}
+	if len(replace) > 0 && !*reverse {
+		log.Fatal("-replace flag requires -reverse flag")
+	}
+
 	types := strings.Split(*typeNames, ",")
 	var tags []string
 	if len(*buildTags) > 0 {
@@ -179,6 +246,14 @@ func main() {
 			valid:       *valid,
 			invalidFlag: *invalid,
 			reverse:     *reverse,
+			marshal:     *marshal,
+		}
+
+		// Parse replacements if provided
+		if len(replace) > 0 {
+			if err := g.parseReplacements(replace); err != nil {
+				log.Fatalf("parsing replacements: %v", err)
+			}
 		}
 
 		// Print the header and package clause.
@@ -186,10 +261,18 @@ func main() {
 		g.Printf("\n")
 		g.Printf("package %s", g.pkg.name)
 		g.Printf("\n")
-		if g.reverse {
+		if g.reverse || g.marshal {
 			g.Printf("import (\n")
+			if g.marshal {
+				g.Printf("\t\"fmt\"\n")
+			}
 			g.Printf("\t\"strconv\"\n")
-			g.Printf("\t\"strings\"\n")
+			if g.reverse {
+				g.Printf("\t\"strings\"\n")
+			}
+			if g.marshal {
+				g.Printf("\t\"unsafe\"\n")
+			}
 			g.Printf(")\n")
 		} else {
 			g.Printf("import \"strconv\"\n") // Used by all methods.
@@ -262,15 +345,23 @@ type InvalidRange struct {
 	value int64  // the value to compare against
 }
 
+// ReplacePair represents an old,new string replacement pair.
+type ReplacePair struct {
+	old string
+	new string
+}
+
 // Generator holds the state of the analysis. Primarily used to buffer
 // the output for format.Source.
 type Generator struct {
-	buf            bytes.Buffer     // Accumulated output.
-	pkg            *Package         // Package we are scanning.
-	valid          bool             // Whether to generate Valid() method.
-	invalidFlag    string           // The -invalid flag value.
-	invalidRanges  []InvalidRange   // Parsed invalid ranges.
-	reverse        bool             // Whether to generate Reverse{{Type}} function.
+	buf           bytes.Buffer   // Accumulated output.
+	pkg           *Package       // Package we are scanning.
+	valid         bool           // Whether to generate Valid() method.
+	invalidFlag   string         // The -invalid flag value.
+	invalidRanges []InvalidRange // Parsed invalid ranges.
+	reverse       bool           // Whether to generate Reverse{{Type}} function.
+	marshal       bool           // Whether to generate MarshalJSON/UnmarshalJSON methods.
+	replacements  []ReplacePair  // String replacements for Reverse function.
 
 	logf func(format string, args ...any) // test logging hook; nil when not testing
 }
@@ -347,6 +438,71 @@ func (g *Generator) validateNoOverlap() error {
 				return fmt.Errorf("overlapping invalid ranges: %s and %s", formatRange(r1), formatRange(r2))
 			}
 		}
+	}
+	return nil
+}
+
+// parseReplacementPair splits a replacement string on unescaped commas.
+// Returns (old, new, error). Supports backslash escaping:
+//   \, → literal comma
+//   \\ → literal backslash
+//   \x → literal \x (for forward compatibility)
+func parseReplacementPair(s string) (string, string, error) {
+	var parts []string
+	var current strings.Builder
+
+	escaped := false
+	for _, ch := range s {
+		if escaped {
+			// After backslash, all characters are literal
+			current.WriteRune(ch)
+			escaped = false
+			continue
+		}
+
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+
+		if ch == ',' {
+			// Unescaped comma - split here
+			parts = append(parts, current.String())
+			current.Reset()
+			continue
+		}
+
+		current.WriteRune(ch)
+	}
+
+	// Add final part
+	if escaped {
+		// Trailing backslash is treated as literal backslash
+		current.WriteRune('\\')
+	}
+	parts = append(parts, current.String())
+
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid replacement format %q: expected \"old,new\"", s)
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// parseReplacements parses the --replace flag values into ReplacePair structs.
+// Each value should be in the format "old,new" with optional backslash escaping.
+func (g *Generator) parseReplacements(replaceFlags []string) error {
+	g.replacements = nil
+	for _, r := range replaceFlags {
+		old, new, err := parseReplacementPair(r)
+		if err != nil {
+			return err
+		}
+
+		g.replacements = append(g.replacements, ReplacePair{
+			old: strings.TrimSpace(old),
+			new: strings.TrimSpace(new),
+		})
 	}
 	return nil
 }
@@ -560,6 +716,10 @@ func (g *Generator) generate(typeName string, values []Value) {
 	if g.reverse {
 		g.buildReverseMaps(runs, typeName)
 		g.buildReverseFunc(typeName)
+	}
+	// Generate MarshalJSON and UnmarshalJSON methods if requested.
+	if g.marshal {
+		g.buildMarshalMethods(typeName)
 	}
 }
 
@@ -1013,6 +1173,11 @@ func (g *Generator) buildReverseFunc(typeName string) {
 	g.Printf("\n")
 	g.Printf("func Reverse%s(s string, caseSensitive bool) (%s, bool) {\n", typeName, typeName)
 
+	// Apply string replacements if any
+	for _, r := range g.replacements {
+		g.Printf("\ts = strings.ReplaceAll(s, %q, %q)\n", r.old, r.new)
+	}
+
 	g.Printf("\tif caseSensitive {\n")
 	g.Printf("\t\tif val, ok := _%s_rindex[s]; ok {\n", typeName)
 
@@ -1038,5 +1203,33 @@ func (g *Generator) buildReverseFunc(typeName string) {
 	g.Printf("\t}\n")
 	g.Printf("\tvar zero %s\n", typeName)
 	g.Printf("\treturn zero, false\n")
+	g.Printf("}\n")
+}
+
+// buildMarshalMethods generates MarshalJSON and UnmarshalJSON methods.
+func (g *Generator) buildMarshalMethods(typeName string) {
+	// MarshalJSON method
+	g.Printf("\n")
+	g.Printf("func (i %s) MarshalJSON() ([]byte, error) {\n", typeName)
+	g.Printf("\ts := i.String()\n")
+	g.Printf("\treturn []byte(`\"` + s + `\"`), nil\n")
+	g.Printf("}\n")
+
+	// UnmarshalJSON method
+	g.Printf("\n")
+	g.Printf("func (i *%s) UnmarshalJSON(data []byte) error {\n", typeName)
+	g.Printf("\tif len(data) < 2 || data[0] != '\"' || data[len(data)-1] != '\"' {\n")
+	g.Printf("\t\treturn fmt.Errorf(\"invalid JSON string for %s\")\n", typeName)
+	g.Printf("\t}\n")
+	g.Printf("\tvar s string\n")
+	g.Printf("\tif len(data) > 2 {\n")
+	g.Printf("\t\ts = unsafe.String(&data[1], len(data)-2)\n")
+	g.Printf("\t}\n")
+	g.Printf("\tval, ok := Reverse%s(s, true)\n", typeName)
+	g.Printf("\tif !ok {\n")
+	g.Printf("\t\treturn fmt.Errorf(\"invalid %s value: %%s\", s)\n", typeName)
+	g.Printf("\t}\n")
+	g.Printf("\t*i = val\n")
+	g.Printf("\treturn nil\n")
 	g.Printf("}\n")
 }
