@@ -108,6 +108,9 @@
 // The -marshalinsensitive flag makes UnmarshalJSON case-insensitive when looking up string values.
 // For example, "red", "Red", and "RED" would all unmarshal to the same value. Automatically enables
 // -marshal (and transitively -reverse and -valid).
+//
+// The -list flag generates a List{{Type}}() iter.Seq[{{Type}}] function that yields all defined
+// constant values in order.
 package main
 
 import (
@@ -152,6 +155,7 @@ var (
 	reverse            = flag.Bool("reverse", false, "generate Reverse{{Type}} function for string to value lookup")
 	marshal            = flag.Bool("marshal", false, "generate MarshalJSON/UnmarshalJSON methods (requires -reverse)")
 	marshalinsensitive = flag.Bool("marshalinsensitive", false, "make UnmarshalJSON case-insensitive (automatically enables -marshal)")
+	list               = flag.Bool("list", false, "generate List{{Type}}() iter.Seq[{{Type}}] function that yields all values in order")
 	replace            replaceFlags
 )
 
@@ -174,6 +178,7 @@ func Usage() {
 	fmt.Fprintf(os.Stderr, "  -replace: Apply string replacements in reverse lookup (requires -reverse)\n")
 	fmt.Fprintf(os.Stderr, "  -marshal: Generate JSON marshal methods (requires -reverse, enables -valid)\n")
 	fmt.Fprintf(os.Stderr, "  -marshalinsensitive: Make UnmarshalJSON case-insensitive (enables -marshal)\n")
+	fmt.Fprintf(os.Stderr, "  -list: Generate List{{Type}}() iter.Seq[{{Type}}] function\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "For more information, see:\n")
 	fmt.Fprintf(os.Stderr, "\thttps://pkg.go.dev/golang.org/x/tools/cmd/stringer\n")
@@ -264,6 +269,7 @@ func main() {
 			reverse:            *reverse,
 			marshal:            *marshal,
 			marshalinsensitive: *marshalinsensitive,
+			list:               *list,
 		}
 
 		// Parse replacements if provided
@@ -278,10 +284,13 @@ func main() {
 		g.Printf("\n")
 		g.Printf("package %s", g.pkg.name)
 		g.Printf("\n")
-		if g.reverse || g.marshal {
+		if g.reverse || g.marshal || g.list {
 			g.Printf("import (\n")
 			if g.marshal {
 				g.Printf("\t\"fmt\"\n")
+			}
+			if g.list {
+				g.Printf("\t\"iter\"\n")
 			}
 			g.Printf("\t\"strconv\"\n")
 			if g.reverse {
@@ -379,6 +388,7 @@ type Generator struct {
 	reverse            bool           // Whether to generate Reverse{{Type}} function.
 	marshal            bool           // Whether to generate MarshalJSON/UnmarshalJSON methods.
 	marshalinsensitive bool           // Whether to make UnmarshalJSON case-insensitive.
+	list               bool           // Whether to generate List{{Type}}() iter.Seq function.
 	replacements       []ReplacePair  // String replacements for Reverse function.
 
 	logf func(format string, args ...any) // test logging hook; nil when not testing
@@ -738,6 +748,10 @@ func (g *Generator) generate(typeName string, values []Value) {
 	// Generate MarshalJSON and UnmarshalJSON methods if requested.
 	if g.marshal {
 		g.buildMarshalMethods(typeName)
+	}
+	// Generate List{{Type}} function if requested.
+	if g.list {
+		g.buildListFunc(runs, typeName)
 	}
 }
 
@@ -1221,6 +1235,22 @@ func (g *Generator) buildReverseFunc(typeName string) {
 	g.Printf("\t}\n")
 	g.Printf("\tvar zero %s\n", typeName)
 	g.Printf("\treturn zero, false\n")
+	g.Printf("}\n")
+}
+
+// buildListFunc generates the List{{Type}}() iter.Seq[{{Type}}] function.
+func (g *Generator) buildListFunc(runs [][]Value, typeName string) {
+	g.Printf("\n")
+	g.Printf("func List%s() iter.Seq[%s] {\n", typeName, typeName)
+	g.Printf("\treturn func(yield func(%s) bool) {\n", typeName)
+	for _, values := range runs {
+		for _, value := range values {
+			g.Printf("\t\tif !yield(%s) {\n", value.originalName)
+			g.Printf("\t\t\treturn\n")
+			g.Printf("\t\t}\n")
+		}
+	}
+	g.Printf("\t}\n")
 	g.Printf("}\n")
 }
 

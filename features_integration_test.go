@@ -676,6 +676,108 @@ func TestGeneratorParseReplacements(t *testing.T) {
 	}
 }
 
+// TestListFunction tests that the -list flag generates a working List function
+func TestListFunction(t *testing.T) {
+	tempDir := t.TempDir()
+	stringerBin := buildStringer(t, tempDir)
+
+	// Create a test type file
+	testFile := filepath.Join(tempDir, "test.go")
+	testCode := `package main
+
+type Fruit int
+
+const (
+	Apple Fruit = iota
+	Orange
+	Banana
+)
+`
+	if err := os.WriteFile(testFile, []byte(testCode), 0644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	// Run stringer with -list
+	cmd := exec.Command(stringerBin, "-type=Fruit", "-list", testFile)
+	cmd.Dir = tempDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Failed to run stringer: %v\n%s", err, output)
+	}
+
+	// Read generated file
+	generatedFile := filepath.Join(tempDir, "fruit_string.go")
+	content, err := os.ReadFile(generatedFile)
+	if err != nil {
+		t.Fatalf("Failed to read generated file: %v", err)
+	}
+
+	// Verify the List function is present
+	if !strings.Contains(string(content), "func ListFruit() iter.Seq[Fruit]") {
+		t.Errorf("Generated code does not contain ListFruit function:\n%s", content)
+	}
+
+	// Write a test program to verify runtime behavior
+	testProgram := filepath.Join(tempDir, "main.go")
+	programCode := `package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	expected := []Fruit{Apple, Orange, Banana}
+	i := 0
+	for v := range ListFruit() {
+		if i >= len(expected) {
+			fmt.Printf("FAIL: ListFruit yielded more values than expected\n")
+			os.Exit(1)
+		}
+		if v != expected[i] {
+			fmt.Printf("FAIL: ListFruit[%d] = %v, want %v\n", i, v, expected[i])
+			os.Exit(1)
+		}
+		i++
+	}
+	if i != len(expected) {
+		fmt.Printf("FAIL: ListFruit yielded %d values, want %d\n", i, len(expected))
+		os.Exit(1)
+	}
+
+	// Test early break
+	count := 0
+	for range ListFruit() {
+		count++
+		if count == 2 {
+			break
+		}
+	}
+	if count != 2 {
+		fmt.Printf("FAIL: early break: got %d iterations, want 2\n", count)
+		os.Exit(1)
+	}
+
+	fmt.Println("PASS")
+}
+`
+	if err := os.WriteFile(testProgram, []byte(programCode), 0644); err != nil {
+		t.Fatalf("Failed to write test program: %v", err)
+	}
+
+	// Run the test program
+	cmd = exec.Command("go", "run", testFile, generatedFile, testProgram)
+	cmd.Dir = tempDir
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Test program failed: %v\n%s", err, output)
+	}
+
+	if !strings.Contains(string(output), "PASS") {
+		t.Errorf("Test program did not pass:\n%s", output)
+	}
+}
+
 // buildStringer builds the stringer binary for testing
 func buildStringer(t *testing.T, tempDir string) string {
 	stringerBin := filepath.Join(tempDir, "stringer")
