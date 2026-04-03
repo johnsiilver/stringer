@@ -182,6 +182,24 @@ This generates:
 - `func (i *Fruit) UnmarshalJSON(data []byte) error` - JSON decoding
 - `func ListFruit() iter.Seq[Fruit]` - iterate over all values in order
 
+## Claude Code skill
+
+This repo includes a [SKILL.md](SKILL.md) file that teaches [Claude Code](https://claude.ai/code) how to generate `go:generate` directives for this tool. When installed, Claude will automatically suggest the correct directive and flags when you define integer enum types.
+
+To install, copy the file into your personal or project skills directory:
+
+```bash
+# Personal (applies to all your projects)
+mkdir -p ~/.claude/skills/stringer
+cp SKILL.md ~/.claude/skills/stringer/SKILL.md
+
+# Or project-level (applies to one project)
+mkdir -p .claude/skills/stringer
+cp SKILL.md .claude/skills/stringer/SKILL.md
+```
+
+You can also invoke it manually in Claude Code with `/stringer`.
+
 ## License
 
 See [LICENSE](LICENSE) for details. This tool is a fork of the original Go `stringer` tool.
